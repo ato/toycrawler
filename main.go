@@ -12,7 +12,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer browser.Close()
-	
+
 	warcWriter := NewWarcWriter()
 	browser.ExchangeWriter = warcWriter.WriteExchange
 

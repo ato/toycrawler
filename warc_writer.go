@@ -51,12 +51,14 @@ func formatHeaders(headers map[string]string) string {
 }
 
 func (w *WarcWriter) WriteExchange(exchange *chrome.Exchange)  {
-	log.Println("writing exchange")
 	requestId := newRecordId()
 	responseId := newRecordId()
+
 	date := time.Now().In(time.UTC).Format(time.RFC3339)
 
 	requestHeader := exchange.Response.RequestHeadersText
+
+	// XXX: Chrome doesn't always keep the request text so sometimes so fake it
 	if requestHeader == "" {
 		requestHeader = fmt.Sprintf("%s %s HTTP/1.1\r\n%s",
 			exchange.Request.Method, exchange.Request.Url,
@@ -74,8 +76,10 @@ func (w *WarcWriter) WriteExchange(exchange *chrome.Exchange)  {
 		exchange.Response.Url, date, requestId, responseId, len(requestHeader), requestHeader)
 
 	responseHeader := exchange.Response.HeadersText
+
+	// XXX: Chrome doesn't always keep the raw response headers so fake it
 	if responseHeader == "" {
-		// XXX: pywb is confused by protocols like SPDY so force HTTP
+		// XXX: pywb is confused by protocols like SPDY so force HTTP/1.[01] as the protocol
 		protocol := "HTTP/1.1"
 		if (exchange.Response.Protocol == "http/1.0") {
 			protocol = "HTTP/1.0"
