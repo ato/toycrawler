@@ -6,7 +6,15 @@ import (
 	"strings"
 )
 
+type Page struct {
+	id int64
+	url string
+}
+
 func main() {
+	db := OpenDatabase()
+	defer db.Close()
+
 	browser, err := chrome.Connect("localhost", 9292)
 	if err != nil {
 		log.Fatal(err)
@@ -16,30 +24,22 @@ func main() {
 	warcWriter := NewWarcWriter()
 	browser.ExchangeWriter = warcWriter.WriteExchange
 
-	queue := []string{"http://www.nla.gov.au/"}
-	seen := map[string]bool{}
+	for candidate := db.NextCandidate(); candidate != nil; candidate = db.NextCandidate() {
 
-	// mark seed urls as seen
-	for _, seed := range queue {
-		seen[seed] = true
-	}
+		log.Printf("Visit [%d] %s\n", candidate.id, candidate.url)
 
-	for len(queue) > 0 {
-		target := queue[0]
-		queue = queue[1:]
+		visit := browser.Browse(candidate.url)
 
-		log.Printf("Browsing %s\n", target)
-
-		links := browser.Browse(target)
-
-		for _, link := range links {
-			// enqueue only novel urls
-			if !seen[link] && strings.HasPrefix(link, "http://www.nla.gov.au/") {
-				queue = append(queue, link)
-				seen[link] = true
+		for _, link := range visit.Links {
+			if (strings.HasPrefix(link, "http://") ||
+				strings.HasPrefix(link, "https://")) {
+				db.AddLink(candidate.id, link)
 			}
 		}
+
+		db.RecordVisit(candidate.id, visit)
 	}
 
 	browser.Close()
 }
+

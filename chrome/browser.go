@@ -23,7 +23,10 @@ const jsExtractLinks = `
 		var anchors = document.querySelectorAll('a');
 		var links = [];
 		for (var i = 0; i < anchors.length; i++) {
-			links.push(anchors[i].href);
+			var link = anchors[i].href;
+			if (link) {
+				links.push(link);
+			}
 		}
 
 		// XXX: old versions of prototype.js override toJSON() breaking JSON.stringify
@@ -40,6 +43,21 @@ const jsExtractLinks = `
 		return json;
 	})()
 `
+const jsExtractText = `document.body.innerText`
+
+
+func ExtractText(c *Client) (string, error) {
+	var response struct {
+		Result struct{
+			Value string
+		}
+	}
+	err := c.Call("Runtime.evaluate", map[string]interface{}{"expression": jsExtractText}, &response)
+	if (err != nil) {
+		return "", err
+	}
+	return response.Result.Value, nil
+}
 
 func ExtractLinks(c *Client) ([]string, error) {
 	var response struct {
@@ -67,7 +85,7 @@ func Connect(host string, port int32) (*Browser, error) {
 	}
 
 	c.Call("Page.enable", nil, nil)
-	c.Call("Network.enable", nil, nil)
+	c.Call("Network.enable", map[string]interface{}{"maxTotalBufferSize":1000000000, "maxResourceBufferSize":100000000}, nil)
 
 	c.Call("Network.addBlockedURL", map[string]interface{}{"url": "http://www.google-analytics.com/ga.js"}, nil)
 	c.Call("Network.addBlockedURL", map[string]interface{}{"url": "https://ssl.google-analytics.com/ga.js"}, nil)
@@ -96,13 +114,26 @@ func getResponseBody(c *Client, requestId string) []byte {
 	}
 }
 
-func (b *Browser) Browse(url string) (links []string) {
+type Visit struct {
+	Duration time.Duration
+	Links []string
+	Status int32
+	TotalBytes int64
+	MimeType string
+	DomText string
+}
+
+func (b *Browser) Browse(url string) (*Visit) {
+	browsing := new (Visit)
 	c := b.client
+
+	startTime := time.Now()
+
 	timeout := time.After(time.Second * 10)
 	c.Events = make(chan interface{}, 1000)
 
 	if err := c.Call("Page.navigate", map[string]interface{}{"url": url}, nil); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to navigate to %s: %d %s", url, err.(*Error).Code, err)
 	}
 
 	defer b.client.Call("Page.navigate", map[string]interface{}{"url": "about:blank"}, nil)
@@ -111,17 +142,23 @@ func (b *Browser) Browse(url string) (links []string) {
 	inflightRequests := map[string]*NetworkRequest{}
 	inflightResponses := map[string]*NetworkResponse{}
 
-	for {
+	EventLoop: for {
 		select {
 		case event := <-c.Events:
 			switch event.(type) {
 			case *PageLoadEventFired:
 				var err error
-				links, err = ExtractLinks(c)
+				browsing.Links, err = ExtractLinks(c)
 				if (err != nil) {
 					log.Fatalf("link extraction failed: %s\n", err)
 				}
-				return links
+
+				browsing.DomText, err = ExtractText(c)
+				if (err != nil) {
+					log.Fatalf("text extraction failed: %s\n", err)
+				}
+
+				break EventLoop
 
 			case *NetworkRequestWillBeSent:
 				e := event.(*NetworkRequestWillBeSent)
@@ -133,6 +170,10 @@ func (b *Browser) Browse(url string) (links []string) {
 			case *NetworkResponseReceived:
 				e := event.(*NetworkResponseReceived)
 				inflightResponses[e.RequestId] = e.Response
+				if e.RequestId == firstRequestId {
+					browsing.Status = e.Response.Status
+					browsing.MimeType = e.Response.MimeType
+				}
 
 			case *NetworkLoadingFailed:
 				if event.(*NetworkLoadingFailed).RequestId == firstRequestId {
@@ -148,6 +189,7 @@ func (b *Browser) Browse(url string) (links []string) {
 						exchange.Request = inflightRequests[requestId]
 						exchange.Response = response
 						exchange.ResponseBody = getResponseBody(c, requestId)
+						browsing.TotalBytes += int64(len(exchange.ResponseBody))
 						b.ExchangeWriter(exchange)
 					}
 				}
@@ -157,6 +199,9 @@ func (b *Browser) Browse(url string) (links []string) {
 			return nil
 		}
 	}
+
+	browsing.Duration = time.Now().Sub(startTime)
+	return browsing
 }
 
 func (b *Browser) Close() {
